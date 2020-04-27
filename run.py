@@ -10,7 +10,7 @@ import argparse
 parser = argparse.ArgumentParser(description='Run Example')
 parser.add_argument('config_file', type=str, help='path of config file')
 parser.add_argument('--thread', type=int, default=8, help='number of threads')
-parser.add_argument('--steps', type=int, default=10, help='number of steps')
+parser.add_argument('--steps', type=int, default=100, help='number of steps')
 parser.add_argument('--delta_t', type=int, default=20, help='how often agent make decisions')
 args = parser.parse_args()
 
