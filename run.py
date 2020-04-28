@@ -10,7 +10,7 @@ import argparse
 parser = argparse.ArgumentParser(description='Run Example')
 parser.add_argument('config_file', type=str, help='path of config file')
 parser.add_argument('--thread', type=int, default=8, help='number of threads')
-parser.add_argument('--steps', type=int, default=100, help='number of steps')
+parser.add_argument('--steps', type=int, default=3600, help='number of steps')
 parser.add_argument('--delta_t', type=int, default=20, help='how often agent make decisions')
 args = parser.parse_args()
 
@@ -35,12 +35,14 @@ env = TSCEnv(world, agents, metric)
 # simulate
 obs = env.reset()
 actions = []
+last_dist = 0
 for i in range(args.steps):
+    if i%100 == 0:
+        print("time: ", i)
     actions = []
     for agent_id, agent in enumerate(agents):
         actions.append(agent.get_action(obs[agent_id]))
     obs, rewards, dones, info = env.step(actions)
     #print(actions)
-    print(env.eng.get_vehicle_distance())
     
 print(env.eng.get_average_travel_time())
