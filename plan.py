@@ -1,6 +1,7 @@
 import gym
 import json
 import math
+import os
 
 
 class Intersection():
@@ -41,10 +42,12 @@ class Road():
 
 
 class A_Star_Plan():
-    def __init__(self, roadnet_config_file):
-        with open(roadnet_config_file) as f:
+    def __init__(self, roadnet_file, flow_file):
+        with open(roadnet_file) as f:
             self.roadnet_json = json.load(f)
-
+        with open(flow_file) as g:
+            self.flow_json = json.load(g)
+        self.max_speed = self.flow_json[0]["vehicle"]["maxSpeed"]
         self.intersection_list = {}
         self.road_list = {}
         for inter in self.roadnet_json["intersections"]:
@@ -81,14 +84,16 @@ class A_Star_Plan():
                 return link[0]
         return "Not found"
 
-    def get_plan(self, start_road_id, end_road_id, speed, data):
+    def get_plan(self, start_road_id, end_road_id, record):
+        if start_road_id == end_road_id:
+            return [end_road_id]
         inters = self.intersection_list.copy()
         open_list = [self.road_list[start_road_id].end_inter_id]
         close_list = []
         while open_list != []:
             min_dist = 99999999
             for i in open_list:
-                F = inters[i].G + inters[i].get_H(inters[self.road_list[end_road_id].start_inter_id], speed)
+                F = inters[i].G + inters[i].get_H(inters[self.road_list[end_road_id].start_inter_id], self.max_speed)
                 if F < min_dist:
                     current = i
                     min_dist = F
@@ -100,8 +105,10 @@ class A_Star_Plan():
                 if inters[link[1]].virtual == False and link[1] not in close_list and link[1] not in open_list:
                     open_list.append(link[1])
                     inters[link[1]].father = inters[current]
-                    wait_time = (data[link[0]]["straight"] + data[link[0]]["left"])/2
-                    inters[link[1]].G = inters[current].G + self.get_dist(inters[current], inters[link[1]])/speed + wait_time
+                    if record.is_in_record(link[0]):
+                        inters[link[1]].G = inters[current].G + record.get_average_time(link[0])
+                    else:
+                        inters[link[1]].G = inters[current].G + self.get_dist(inters[current], inters[link[1]])/self.max_speed
                 elif link[1] in open_list:
                     if inters[current].G + self.get_dist(inters[current], inters[link[1]]) < inters[link[1]].G:
                         inters[link[1]].father = inters[current]
@@ -117,20 +124,91 @@ class A_Star_Plan():
 
         return route_plan
 
-    def generate_plan(self, origin_flow, gen_flow, road_data):
-        with open(origin_flow) as f:
-            self.flow_json = json.load(f)
-        with open(road_data) as g:
-            data = json.load(g)
-        for vehicle in self.flow_json:
-            start_id = vehicle["route"][0]
-            end_id = vehicle["route"][-1]
-            speed = vehicle["vehicle"]["maxSpeed"]
-            plan = self.get_plan(start_id, end_id, speed, data)
-            vehicle["route"] = plan
-        f_gen = open(gen_flow, 'w')
-        json.dump(self.flow_json, f_gen, indent=1)
-        f_gen.close()
+
+class Record():
+    def __init__(self, interval, min_reference):
+        self.interval = interval
+        self.road_records = {}
+        self.buffer = {}
+        self.min_reference = min_reference
+
+    def update(self, world, time):
+        vehicles = world.eng.get_vehicles()
+        for v in vehicles:
+            info = world.eng.get_vehicle_info(v)
+            if v not in self.buffer:
+                if "road" in info:
+                    self.buffer[v] = [time, info["road"], time]
+            elif "road" in info and info["road"] == self.buffer[v][1]:
+                self.buffer[v][2] = time
+            else:
+                if self.buffer[v][1] not in self.road_records:
+                    self.road_records[self.buffer[v][1]] = [[time, self.buffer[v][2] - self.buffer[v][0]]]
+                else:
+                    self.road_records[self.buffer[v][1]].append([time, self.buffer[v][2] - self.buffer[v][0]])
+                del self.buffer[v]
+
+        for v in list(self.buffer.keys()):
+            if v not in vehicles:
+                del self.buffer[v]
+
+        for road in self.road_records:
+            while len(self.road_records[road]) > self.min_reference:
+                if self.road_records[road][0][0] < time - self.interval:
+                    del self.road_records[road][0]
+                else:
+                    break
+
+    def is_in_record(self, road_id):
+        return road_id in self.road_records
+
+    def get_average_time(self, road_id):
+        if not self.is_in_record(road_id):
+            print("Road has no record")
+        sum_time = 0
+        sum_count = 0
+        for entry in self.road_records[road_id]:
+            sum_time += entry[1]
+            sum_count += 1
+
+        return 1.0*sum_time/sum_count
+
+    def print_records(self):
+        print(self.road_records)
+
+
+class VehicleControl():
+    def __init__(self):
+        self.last_state = {}
+        self.success = 0
+        self.failure = 0
+
+    def replan(self, world, plan, record):
+        vehicles = world.eng.get_vehicles()
+        for v in vehicles:
+            info = world.eng.get_vehicle_info(v)
+            if "road" in info:
+                road = info["road"]
+            else:
+                road = '0'
+            if v not in self.last_state:
+                self.last_state[v] = road
+                continue
+            if self.last_state[v] == road or road == '0':
+                continue
+            route = info["route"].split(' ')[:-1]
+            new_route = plan.get_plan(route[0], route[-1], record)
+            if new_route != route:
+                #print("New plan")
+                if not world.eng.set_vehicle_route(v, new_route[1:]):
+                    self.failure += 1
+                    #print(route)
+                    #print(new_route)
+                else:
+                    self.success += 1
+
+    def summary(self):
+        print("Replan Success: ", self.success, "Failure: ", self.failure)
 
 
 def clean_plan(origin_flow, gen_flow):
@@ -143,13 +221,3 @@ def clean_plan(origin_flow, gen_flow):
         f_gen = open(gen_flow, 'w')
         json.dump(flow_json, f_gen, indent=1)
         f_gen.close()
-
-
-def main():
-    a_star = A_Star_Plan("examples/hangzhou_4x4_gudang_18041610_1h/roadnet_4X4.json")
-    a_star.generate_plan("examples/hangzhou_4x4_gudang_18041610_1h/hangzhou_4x4_gudang_18041610_1h.json", 
-        "examples/hangzhou_4x4_gudang_18041610_1h/astar_record.json",
-        "examples/hangzhou_4x4_gudang_18041610_1h/road_data.json")
-    #clean_plan("examples/hangzhou_4x4_gudang_18041610_1h/hangzhou_4x4_gudang_18041610_1h.json", "examples/hangzhou_4x4_gudang_18041610_1h/noplan.json")
-
-main()

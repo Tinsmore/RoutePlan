@@ -3,9 +3,9 @@
 	"seed": 0,
 	"dir": "examples/hangzhou_4x4_gudang_18041610_1h/",
 	"roadnetFile": "roadnet_4X4.json",
-	"flowFile": "noplan.json",
+	"flowFile": "hangzhou_4x4_gudang_18041610_1h.json",
 	"rlTrafficLight": true,
-	"laneChange": false,
+	"laneChange": true,
 	"saveReplay": true,
 	"roadnetLogFile": "replay_roadnet.json",
 	"replayLogFile": "replay.txt"
