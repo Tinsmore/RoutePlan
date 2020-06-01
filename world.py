@@ -22,6 +22,7 @@ class Intersection(object):
     def __init__(self, intersection, world):
         self.id = intersection["id"]
         self.eng = world.eng
+        self.pos = intersection["point"]
 
         # incoming and outgoing roads of each intersection, clock-wise order from North
         self.roads = []

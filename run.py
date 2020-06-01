@@ -12,6 +12,7 @@ import os.path as osp
 parser = argparse.ArgumentParser(description='Run Example')
 parser.add_argument('config_file', type=str, help='path of config file')
 parser.add_argument('--thread', type=int, default=8, help='number of threads')
+parser.add_argument('--episodes', type=int, default=10, help='number of episodes')
 parser.add_argument('--steps', type=int, default=3600, help='number of steps')
 args = parser.parse_args()
 
@@ -34,14 +35,11 @@ for i in world.intersections:
     ))
 
 # route plan agents
-plan_agents = []
+guide_agents = []
 with open(roadnet_file) as rf:
     roadnet = json.load(rf)
 for inter in world.intersections:
-    plan_agents.append(IntersectionAgent(
-        roadnet["intersections"][inter.id],
-        inter.id
-    ))
+    guide_agents.append(IntersectionAgent(inter))
 
 # create metric
 metric = TravelTimeMetric(world)
@@ -50,7 +48,7 @@ metric = TravelTimeMetric(world)
 env = TSCEnv(world, agents, metric)
 
 # Plan agent
-a_star_plan = A_Star_Plan(roadnet_file, flow_file)
+a_star_plan = A_Star_Plan(world.intersections, flow_file)
 
 # Record agent
 record = Record(interval=300, min_reference=5)
@@ -58,17 +56,45 @@ record = Record(interval=300, min_reference=5)
 # Vehicle control agent
 vc = VehicleControl()
 
-# simulate
-obs = env.reset()
-actions = []
-last_dist = 0
-for i in range(args.steps):
-    record.update(world, i)
-    vc.replan(world, a_star_plan, record)
-    actions = []
-    for agent_id, agent in enumerate(agents):
-        actions.append(agent.get_action(obs[agent_id]))
-    obs, rewards, dones, info = env.step(actions)
+def train():
+    for e in range(args.episodes):
+        obs = env.reset()
+        for i in range(args.steps):
+            record.update(world, i)
+            vc.replan(world, a_star_plan, record)
+            actions = []
+            for agent_id, agent in enumerate(agents):
+                actions.append(agent.get_action(obs[agent_id]))
+            obs, rewards, dones, info = env.step(actions)
 
-vc.summary()
-print("Final travel time: ", env.eng.get_average_travel_time())
+            running_v = world.eng.get_lane_vehicle_count()
+            for agent in guide_agents:
+                Q_values = agent.get_values(running_v, i)
+
+            total_time = e*args.steps + i
+            for agent in guide_agents:
+                if total_time > agent.learning_start and total_time % agent.update_model_freq == agent.update_model_freq - 1:
+                    agent.replay()
+                if total_time > agent.learning_start and total_time % agent.update_target_model_freq == agent.update_target_model_freq - 1:
+                    agent.update_target_network()
+
+        vc.summary()
+        print("Episode: ", e, " Final travel time: ", env.eng.get_average_travel_time())
+
+def test():
+    obs = env.reset()
+    for i in range(args.steps):
+        record.update(world, i)
+        vc.replan(world, a_star_plan, record)
+        actions = []
+        for agent_id, agent in enumerate(agents):
+            actions.append(agent.get_action(obs[agent_id]))
+        obs, rewards, dones, info = env.step(actions)
+
+    vc.summary()
+    print("Final travel time: ", env.eng.get_average_travel_time())
+
+def main():
+    train()
+
+main()
