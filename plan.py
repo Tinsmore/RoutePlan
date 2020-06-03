@@ -2,150 +2,121 @@ import gym
 import json
 import math
 import os
+import numpy as np
 from copy import deepcopy
 
 
 class Intersection():
-    def __init__(self, inter_obj):
-        self.id = inter_obj.id
-        self.pos = inter_obj.pos
-        self.roadlinks = inter_obj.roadlinks
-        self.father = None
-        self.G = 0
-        self.last_road = None
+    def __init__(self, inter_json):
+        self.id = inter_json["id"]
+        self.pos = inter_json["point"]
+
+        links = inter_json["roadLinks"]
+        self.roadlinks = []
+        for link in links:
+            self.roadlinks.append([link["startRoad"], link["endRoad"]])
 
 
 class Road():
-    def __init__(self, road_id):
-        self.id = road_id
-        self.start_inter_id = None
-        self.end_inter_id = None
+    def __init__(self, road_json):
+        self.id = road_json["id"]
+        points = road_json["points"]
+        sq_dist = math.pow(points[0]["x"] - points[1]["x"], 2) + math.pow(points[0]["y"] - points[1]["y"], 2)
+        self.length = math.sqrt(sq_dist)
+
+        self.start_inter_id = road_json["startIntersection"]
+        self.end_inter_id = road_json["endIntersection"]
+
+        speed_sum = 0
+        speed_count = 0
+        for lane in road_json["lanes"]:
+            speed_sum += lane["maxSpeed"]
+            speed_count += 1
+        self.max_speed = 1.0*speed_sum/speed_count
+        self.shortest_time = 1.0*self.length/self.max_speed
+
         self.valid_outroads = []
-        self.reverse = None
-
-    def set_start_inter(self, inter_id):
-        self.start_inter_id = inter_id
-
-    def set_end_inter(self, inter_id):
-        self.end_inter_id = inter_id
+        self.father = None
+        self.G = 0
 
     def calculate(self, roads, inters):
         if self.end_inter_id:
             for link in inters[self.end_inter_id].roadlinks:
-                if link[0] == self.id and link[1] not in self.valid_outroads:
+                if link[0] == self.id:
                     self.valid_outroads.append(link[1])
-                if roads[link[1]].end_inter_id == self.start_inter_id:
-                    self.reverse = link[1]
 
 
 class A_Star_Plan():
-    def __init__(self, inters, flow_file):
+    def __init__(self, roadnet_file):
         self.intersection_list = {}
         self.road_list = {}
 
-        with open(flow_file) as f:
-            self.flow_json = json.load(f)
-        self.max_speed = self.flow_json[0]["vehicle"]["maxSpeed"]
+        with open(roadnet_file) as f:
+            roadnet = json.load(f)
 
-        for inter_obj in inters:
-            self.intersection_list[inter_obj.id] = Intersection(inter_obj)
-            for link in inter_obj.roadlinks:
-                if link[0] not in self.road_list:
-                    self.road_list[link[0]] = Road(link[0])
-                self.road_list[link[0]].set_end_inter(inter_obj.id)
-                if link[1] not in self.road_list:
-                    self.road_list[link[1]] = Road(link[1])
-                self.road_list[link[1]].set_start_inter(inter_obj.id)
-
+        for inter in roadnet["intersections"]:
+            self.intersection_list[inter["id"]] = Intersection(inter)
+        for road in roadnet["roads"]:
+            self.road_list[road["id"]] = Road(road)
         for road in self.road_list:
             self.road_list[road].calculate(self.road_list, self.intersection_list)
 
-    def get_dist(self, inter1, inter2):
+    def get_H(self, road1, road2):
+        inter1 = self.intersection_list[road1.end_inter_id]
+        inter2 = self.intersection_list[road2.start_inter_id]
         sq_dist = math.pow(inter1.pos["x"]-inter2.pos["x"], 2) + math.pow(inter1.pos["y"]-inter2.pos["y"], 2)
         dist = math.sqrt(sq_dist)
         return dist
 
-    def delete_road(self, inters, roads, road_id):
-        start_inter_id = self.road_list[road_id].start_inter_id
-        end_inter_id = self.road_list[road_id].end_inter_id
-        roadlinks_start = deepcopy(inters[start_inter_id].roadlinks)
-        roadlinks_end = deepcopy(inters[end_inter_id].roadlinks)
-        for link in inters[start_inter_id].roadlinks:
-            if link[1] == road_id:
-                roadlinks_start.remove(link)
-        for link in inters[end_inter_id].roadlinks:
-            if link[0] == road_id:
-                roadlinks_end.remove(link)
-        inters[start_inter_id].roadlinks = roadlinks_start
-        inters[end_inter_id].roadlinks = roadlinks_end
-        for road in roads:
-            roads[road].calculate(roads, inters)
-
     def get_plan(self, start_road_id, end_road_id, record):
         if start_road_id == end_road_id:
-            return [end_road_id]
-        inters = deepcopy(self.intersection_list)
+            return 0, [end_road_id]
+
         roads = deepcopy(self.road_list)
-        first_inter = roads[start_road_id].end_inter_id
-        inters[first_inter].last_road = start_road_id
-        open_list = [first_inter]
+        open_list = [start_road_id]
         close_list = []
         current = None
         while open_list != []:
             min_dist = 999999
             for i in open_list:
-                F = inters[i].G + self.get_dist(inters[i], inters[roads[end_road_id].start_inter_id])/self.max_speed
+                F = roads[i].G + self.get_H(roads[i], roads[end_road_id])/roads[i].max_speed
                 if F < min_dist:
                     current = i
                     min_dist = F
-
-            if roads[inters[current].last_road].reverse == end_road_id:
-                self.delete_road(inters, roads, inters[current].last_road)
-                open_list.remove(current)
-                continue
-            if end_road_id in roads[inters[current].last_road].valid_outroads:
+            if current == end_road_id:
                 break
-
             open_list.remove(current)
             close_list.append(current)
-            if len(roads[inters[current].last_road].valid_outroads) != 3:
-                print(len(roads[inters[current].last_road].valid_outroads))
-
-            for outroad in roads[inters[current].last_road].valid_outroads:
-                next_inter_id = roads[outroad].end_inter_id
-                if next_inter_id == None:
-                    continue
-                if next_inter_id not in close_list and next_inter_id not in open_list:
-                    open_list.append(next_inter_id)
-                    inters[next_inter_id].father = inters[current]
-                    inters[next_inter_id].last_road = outroad
-                    if record.is_in_record(outroad):
-                        inters[next_inter_id].G = inters[current].G + record.get_average_time(outroad)
-                    else:
-                        inters[next_inter_id].G = inters[current].G + self.get_dist(inters[current], inters[next_inter_id])/self.max_speed
-                elif next_inter_id in open_list:
-                    if inters[current].G + self.get_dist(inters[current], inters[next_inter_id])/self.max_speed < inters[next_inter_id].G:
-                        inters[next_inter_id].father = inters[current]
-                        inters[next_inter_id].last_road = outroad
+            for outroad in roads[current].valid_outroads:
+                if outroad not in close_list and outroad not in open_list:
+                    open_list.append(outroad)
+                    roads[outroad].father = current
+                    roads[outroad].G = roads[current].G + record.get_average_time(outroad)
+                elif outroad in open_list:
+                    if roads[current].G + roads[outroad].shortest_time < roads[outroad].G:
+                        roads[outroad].father = current
+                        roads[outroad].G = roads[current].G + roads[outroad].shortest_time
 
         route_plan = [start_road_id]
         reverse_route = [end_road_id]
-        i = roads[end_road_id].start_inter_id
-        while i != roads[start_road_id].end_inter_id:
-            reverse_route.append(inters[i].last_road)
-            i = inters[i].father.id
+        r = roads[end_road_id].father
+        while r != start_road_id:
+            reverse_route.append(r)
+            r = roads[r].father
         for ct in range(len(reverse_route)):
             route_plan.append(reverse_route[-1-ct])
+        last_G = roads[end_road_id].G
 
-        return route_plan
+        return last_G, route_plan
 
 
 class Record():
-    def __init__(self, interval, min_reference):
+    def __init__(self, plan, interval, min_reference):
         self.interval = interval
         self.road_records = {}
         self.buffer = {}
         self.min_reference = min_reference
+        self.road_list = plan.road_list
 
     def update(self, world, time):
         vehicles = world.eng.get_vehicles()
@@ -174,16 +145,14 @@ class Record():
                 else:
                     break
 
-    def is_in_record(self, road_id):
-        return road_id in self.road_records
-
     def get_average_time(self, road_id):
+        if road_id not in self.road_records:
+            return self.road_list[road_id].shortest_time
         sum_time = 0
         sum_count = 0
         for entry in self.road_records[road_id]:
             sum_time += entry[1]
             sum_count += 1
-
         return 1.0*sum_time/sum_count
 
     def print_records(self):
@@ -195,8 +164,9 @@ class VehicleControl():
         self.last_state = {}
         self.success = 0
         self.failure = 0
+        self.route_change = 0
 
-    def replan(self, world, plan, record):
+    def replan(self, world, plan, record, Q_values, indexs, threshold=1.0):
         vehicles = world.eng.get_vehicles()
         for v in vehicles:
             info = world.eng.get_vehicle_info(v)
@@ -209,23 +179,52 @@ class VehicleControl():
                 continue
             if self.last_state[v] == road or road == '0':
                 continue
-            
+            self.last_state[v] = road
+
+            next_inter = info["intersection"]
             route = info["route"].split(' ')[:-1]
-            new_route = plan.get_plan(route[0], route[-1], record)
-            if len(new_route) == 1:
-                submit_route = new_route
+            if len(route) <= 1:
+                continue
+            '''
+            tta, new_route = plan.get_plan(route[0], route[-1], record)
+            if route == new_route:
+                continue
+            if world.eng.set_vehicle_route(v, new_route):
+                self.success += 1
             else:
-                submit_route = new_route[1:]
-            if new_route != route:
-                if world.eng.set_vehicle_route(v, submit_route):
-                    #print("---- old: ", route, "new: ", new_route)
-                    self.success += 1
-                else:
-                    #print(route, new_route)
-                    self.failure += 1
+                self.failure += 1
+            '''
+            index = indexs[next_inter]
+            value = Q_values[next_inter]
+
+            max_index = np.argmax(value)
+            max_dir = index[max_index]
+            if max_dir == route[1] or plan.road_list[max_dir].valid_outroads == []:
+                continue
+            max_q = value[max_index]
+            tta_max, route_max = plan.get_plan(max_dir, route[-1], record)
+
+            for i in range(len(index)):
+                if index[i] == route[1]:
+                    current_index = i
+                    break
+            current_q = value[current_index]
+            tta = 0
+            for road in route[1:]:
+                tta += record.get_average_time(road)
+
+            if tta_max < tta*threshold:
+                self.route_change += 1
+            else:
+                continue
+
+            if world.eng.set_vehicle_route(v, route_max):
+                self.success += 1
+            else:
+                self.failure += 1
                     
     def summary(self):
-        print("Replan Success: ", self.success, "Failure: ", self.failure)
+        print("Replan: ", self.route_change, " Success: ", self.success, "Failure: ", self.failure)
 
 
 def clean_plan(origin_flow, gen_flow):

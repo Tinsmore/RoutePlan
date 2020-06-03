@@ -48,35 +48,50 @@ metric = TravelTimeMetric(world)
 env = TSCEnv(world, agents, metric)
 
 # Plan agent
-a_star_plan = A_Star_Plan(world.intersections, flow_file)
+a_star_plan = A_Star_Plan(roadnet_file)
 
 # Record agent
-record = Record(interval=300, min_reference=5)
+record = Record(a_star_plan, interval=300, min_reference=5)
 
 # Vehicle control agent
 vc = VehicleControl()
 
 def train():
+    for agent in guide_agents:
+        agent.load_model()
     for e in range(args.episodes):
         obs = env.reset()
         for i in range(args.steps):
+            if i % 100 == 0:
+                print("Episode: ", e, " Time: ", i)
+
             record.update(world, i)
-            vc.replan(world, a_star_plan, record)
+            running_v = world.eng.get_lane_vehicle_count()
+            waiting_v = world.eng.get_lane_waiting_vehicle_count()
+            Q_values = {}
+            indexs = {}
+            for agent in guide_agents:
+                Q_values[agent.id] = agent.get_values(running_v)
+                indexs[agent.id] = agent.index
+            vc.replan(world, a_star_plan, record, Q_values, indexs, 0.8)
+            
+            total_time = e*args.steps + i
+            for agent in guide_agents:
+                agent.remember(running_v, waiting_v, total_time)
+                if total_time > agent.learning_start and total_time % agent.update_model_freq == agent.update_model_freq - 1:
+                    agent.replay()
+                if total_time > agent.learning_start and total_time % agent.update_target_model_freq == agent.update_target_model_freq - 1:
+                    agent.update_target_network()
+            
             actions = []
             for agent_id, agent in enumerate(agents):
                 actions.append(agent.get_action(obs[agent_id]))
             obs, rewards, dones, info = env.step(actions)
 
-            running_v = world.eng.get_lane_vehicle_count()
             for agent in guide_agents:
-                Q_values = agent.get_values(running_v, i)
-
-            total_time = e*args.steps + i
-            for agent in guide_agents:
-                if total_time > agent.learning_start and total_time % agent.update_model_freq == agent.update_model_freq - 1:
-                    agent.replay()
-                if total_time > agent.learning_start and total_time % agent.update_target_model_freq == agent.update_target_model_freq - 1:
-                    agent.update_target_network()
+                agent.save_model()
+            if i % 600 == 0:
+                print(Q_values)
 
         vc.summary()
         print("Episode: ", e, " Final travel time: ", env.eng.get_average_travel_time())
@@ -85,7 +100,14 @@ def test():
     obs = env.reset()
     for i in range(args.steps):
         record.update(world, i)
-        vc.replan(world, a_star_plan, record)
+
+        Q_values = {}
+        indexs = {}
+        for agent in guide_agents:
+            Q_values[agent.id] = agent.get_values(running_v)
+            indexs[agent.id] = agent.index
+        vc.replan(world, a_star_plan, record, Q_values, indexs)
+
         actions = []
         for agent_id, agent in enumerate(agents):
             actions.append(agent.get_action(obs[agent_id]))
