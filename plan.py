@@ -164,9 +164,8 @@ class VehicleControl():
         self.last_state = {}
         self.success = 0
         self.failure = 0
-        self.route_change = 0
 
-    def replan(self, world, plan, record, Q_values, indexs, threshold=1.0):
+    def replan(self, world, plan, record, suggestions, indexs):
         vehicles = world.eng.get_vehicles()
         for v in vehicles:
             info = world.eng.get_vehicle_info(v)
@@ -180,51 +179,27 @@ class VehicleControl():
             if self.last_state[v] == road or road == '0':
                 continue
             self.last_state[v] = road
-
             next_inter = info["intersection"]
             route = info["route"].split(' ')[:-1]
             if len(route) <= 1:
                 continue
-            '''
-            tta, new_route = plan.get_plan(route[0], route[-1], record)
-            if route == new_route:
+
+            new_tta, new_route = plan.get_plan(route[0], route[-1], record)
+            max_road = indexs[next_inter][suggestions[next_inter]]
+            if new_route[1] != max_road or new_route == route:
                 continue
-            if world.eng.set_vehicle_route(v, new_route):
-                self.success += 1
-            else:
-                self.failure += 1
-            '''
-            index = indexs[next_inter]
-            value = Q_values[next_inter]
-
-            max_index = np.argmax(value)
-            max_dir = index[max_index]
-            if max_dir == route[1] or plan.road_list[max_dir].valid_outroads == []:
-                continue
-            max_q = value[max_index]
-            tta_max, route_max = plan.get_plan(max_dir, route[-1], record)
-
-            for i in range(len(index)):
-                if index[i] == route[1]:
-                    current_index = i
-                    break
-            current_q = value[current_index]
-            tta = 0
-            for road in route[1:]:
-                tta += record.get_average_time(road)
-
-            if tta_max < tta*threshold:
-                self.route_change += 1
-            else:
-                continue
-
-            if world.eng.set_vehicle_route(v, route_max):
+            if world.eng.set_vehicle_route(v, new_route[1:]):
                 self.success += 1
             else:
                 self.failure += 1
                     
+    def reset(self):
+        self.last_state = {}
+        self.success = 0
+        self.failure = 0
+        
     def summary(self):
-        print("Replan: ", self.route_change, " Success: ", self.success, "Failure: ", self.failure)
+        print("Replan Success: ", self.success, "Failure: ", self.failure)
 
 
 def clean_plan(origin_flow, gen_flow):

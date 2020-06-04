@@ -11,8 +11,8 @@ import os.path as osp
 # parse args
 parser = argparse.ArgumentParser(description='Run Example')
 parser.add_argument('config_file', type=str, help='path of config file')
-parser.add_argument('--thread', type=int, default=8, help='number of threads')
-parser.add_argument('--episodes', type=int, default=10, help='number of episodes')
+parser.add_argument('--thread', type=int, default=16, help='number of threads')
+parser.add_argument('--episodes', type=int, default=5, help='number of episodes')
 parser.add_argument('--steps', type=int, default=3600, help='number of steps')
 args = parser.parse_args()
 
@@ -36,8 +36,6 @@ for i in world.intersections:
 
 # route plan agents
 guide_agents = []
-with open(roadnet_file) as rf:
-    roadnet = json.load(rf)
 for inter in world.intersections:
     guide_agents.append(IntersectionAgent(inter))
 
@@ -57,30 +55,29 @@ record = Record(a_star_plan, interval=300, min_reference=5)
 vc = VehicleControl()
 
 def train():
+    indexs = {}
     for agent in guide_agents:
-        agent.load_model()
+        #agent.load_model()
+        indexs[agent.id] = agent.index
+
     for e in range(args.episodes):
         obs = env.reset()
         for i in range(args.steps):
-            if i % 100 == 0:
+            if i % 1000 == 0:
                 print("Episode: ", e, " Time: ", i)
-
-            record.update(world, i)
-            running_v = world.eng.get_lane_vehicle_count()
-            waiting_v = world.eng.get_lane_waiting_vehicle_count()
-            Q_values = {}
-            indexs = {}
-            for agent in guide_agents:
-                Q_values[agent.id] = agent.get_values(running_v)
-                indexs[agent.id] = agent.index
-            vc.replan(world, a_star_plan, record, Q_values, indexs, 0.8)
             
-            total_time = e*args.steps + i
+            record.update(world, i)
+            waiting = world.eng.get_lane_waiting_vehicle_count()
+            suggestions = {}
             for agent in guide_agents:
-                agent.remember(running_v, waiting_v, total_time)
-                if total_time > agent.learning_start and total_time % agent.update_model_freq == agent.update_model_freq - 1:
+                suggestions[agent.id] = agent.get_action(waiting)
+            vc.replan(world, a_star_plan, record, suggestions, indexs)
+            
+            for agent in guide_agents:
+                agent.remember(waiting, i)
+                if i % agent.update_model_freq == agent.update_model_freq - 1:
                     agent.replay()
-                if total_time > agent.learning_start and total_time % agent.update_target_model_freq == agent.update_target_model_freq - 1:
+                if i % agent.update_target_model_freq == agent.update_target_model_freq - 1:
                     agent.update_target_network()
             
             actions = []
@@ -88,13 +85,10 @@ def train():
                 actions.append(agent.get_action(obs[agent_id]))
             obs, rewards, dones, info = env.step(actions)
 
-            for agent in guide_agents:
-                agent.save_model()
-            if i % 600 == 0:
-                print(Q_values)
-
         vc.summary()
+        vc.reset()
         print("Episode: ", e, " Final travel time: ", env.eng.get_average_travel_time())
+        print()
 
 def test():
     obs = env.reset()
